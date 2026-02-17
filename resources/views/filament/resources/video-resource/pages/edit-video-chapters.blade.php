@@ -169,6 +169,9 @@
                     let selectionStart = null;
                     let videoDuration = 0;
                     let isDraggingPlayhead = false;
+                    let isDraggingSelection = false;
+                    let selectionDragOffset = 0;
+                    let selectionDuration = 0;
                     const videoUrl = '{{ $this->getVideoUrl() }}';
                     
                     console.log('Video URL:', videoUrl);
@@ -1153,14 +1156,36 @@
                         }
                         
                         updatedContainer.addEventListener('mousedown', (e) => {
-                            // Don't start selection if clicking on playhead or selection block
+                            // Don't start selection if clicking on playhead
                             if (e.target.closest('#playhead-line') || 
-                                e.target.closest('#waveform-playhead') ||
-                                e.target.id === 'temp-selection-visual') {
+                                e.target.closest('#waveform-playhead')) {
                                 return;
                             }
                             
-                            // Start selection when clicking anywhere on waveform
+                            // Check if clicking on existing selection to drag it
+                            const existingSelection = document.getElementById('temp-selection-visual');
+                            if (existingSelection && (e.target === existingSelection || e.target.closest('#temp-selection-visual'))) {
+                                // Start dragging the selection
+                                isDraggingSelection = true;
+                                const rect = updatedContainer.getBoundingClientRect();
+                                const clickX = e.clientX - rect.left;
+                                const clickProgress = Math.max(0, Math.min(1, clickX / rect.width));
+                                const clickTime = clickProgress * videoDuration;
+                                
+                                // Get current selection bounds
+                                const currentStart = parseFloat(existingSelection.dataset.start);
+                                const currentEnd = parseFloat(existingSelection.dataset.end);
+                                selectionDuration = currentEnd - currentStart;
+                                
+                                // Calculate offset from selection start
+                                selectionDragOffset = clickTime - currentStart;
+                                
+                                e.preventDefault();
+                                e.stopPropagation();
+                                return;
+                            }
+                            
+                            // Start new selection when clicking anywhere on waveform
                             isSelecting = true;
                             const rect = updatedContainer.getBoundingClientRect();
                             const x = e.clientX - rect.left;
@@ -1173,6 +1198,58 @@
                         });
 
                         updatedContainer.addEventListener('mousemove', (e) => {
+                            // Handle dragging existing selection
+                            if (isDraggingSelection && selectionDuration > 0 && videoDuration > 0) {
+                                const rect = updatedContainer.getBoundingClientRect();
+                                const x = e.clientX - rect.left;
+                                const progress = Math.max(0, Math.min(1, x / rect.width));
+                                const clickTime = progress * videoDuration;
+                                
+                                // Calculate new start time (accounting for drag offset)
+                                let newStart = clickTime - selectionDragOffset;
+                                let newEnd = newStart + selectionDuration;
+                                
+                                // Constrain to video bounds
+                                if (newStart < 0) {
+                                    newStart = 0;
+                                    newEnd = selectionDuration;
+                                }
+                                if (newEnd > videoDuration) {
+                                    newEnd = videoDuration;
+                                    newStart = videoDuration - selectionDuration;
+                                }
+                                
+                                // Update selection visual
+                                const existingSelection = document.getElementById('temp-selection-visual');
+                                if (existingSelection) {
+                                    existingSelection.style.left = `${(newStart / videoDuration) * 100}%`;
+                                    existingSelection.dataset.start = newStart;
+                                    existingSelection.dataset.end = newEnd;
+                                }
+                                
+                                // Update WaveSurfer region if exists
+                                if (regions) {
+                                    const tempRegion = regions.getRegions().find(r => r.id === 'temp-selection');
+                                    if (tempRegion) {
+                                        tempRegion.setOptions({
+                                            start: newStart,
+                                            end: newEnd
+                                        });
+                                    }
+                                }
+                                
+                                // Update current region
+                                if (currentRegion) {
+                                    currentRegion.start = newStart;
+                                    currentRegion.end = newEnd;
+                                }
+                                
+                                updateSelectionInfo(newStart, newEnd);
+                                e.preventDefault();
+                                return;
+                            }
+                            
+                            // Handle creating new selection
                             if (isSelecting && selectionStart !== null && videoDuration > 0) {
                                 const rect = updatedContainer.getBoundingClientRect();
                                 const x = e.clientX - rect.left;
@@ -1202,7 +1279,8 @@
                                     selectionBlock.style.border = '2px solid #3b82f6';
                                     selectionBlock.style.borderRadius = '4px';
                                     selectionBlock.style.zIndex = '15';
-                                    selectionBlock.style.pointerEvents = 'none';
+                                    selectionBlock.style.cursor = 'move';
+                                    selectionBlock.style.pointerEvents = 'auto';
                                     selectionBlock.dataset.start = selectionStart;
                                     selectionBlock.dataset.end = selectionEnd;
                                     updatedContainer.appendChild(selectionBlock);
@@ -1245,12 +1323,32 @@
                                 e.preventDefault();
                                 e.stopPropagation();
                             }
+                            
+                            if (isDraggingSelection) {
+                                console.log('Selection drag ended');
+                                isDraggingSelection = false;
+                                selectionDragOffset = 0;
+                                e.preventDefault();
+                                e.stopPropagation();
+                            }
                         });
                         
                         // Also handle mouseleave to end selection
                         updatedContainer.addEventListener('mouseleave', () => {
                             if (isSelecting) {
                                 isSelecting = false;
+                            }
+                            if (isDraggingSelection) {
+                                isDraggingSelection = false;
+                                selectionDragOffset = 0;
+                            }
+                        });
+                        
+                        // Handle document mouseup to ensure drag ends even if mouse leaves container
+                        document.addEventListener('mouseup', () => {
+                            if (isDraggingSelection) {
+                                isDraggingSelection = false;
+                                selectionDragOffset = 0;
                             }
                         });
                         
