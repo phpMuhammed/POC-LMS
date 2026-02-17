@@ -41,7 +41,7 @@
             </div>
 
             <!-- Timeline Ruler -->
-            <div id="timeline-ruler" style="width: 100%; position: relative; border-bottom: 2px solid #d1d5db; cursor: pointer; margin-bottom: 8px; height: 45px; min-height: 45px; background: linear-gradient(to bottom, #f9fafb 0%, #ffffff 100%); overflow: visible; display: block; visibility: visible;">
+            <div id="timeline-ruler" style="width: 100%; position: relative; border-bottom: 2px solid #d1d5db; cursor: pointer; margin-bottom: 8px; height: 4px; min-height: 45px; background: linear-gradient(to bottom, #f9fafb 0%, #ffffff 100%); overflow: visible; display: block; visibility: visible;">
                 <div id="ruler-markers" style="position: relative; width: 100%; height: 100%; min-height: 45px; overflow: visible; display: block; visibility: visible;"></div>
                 <div id="playhead-line" style="position: absolute; top: 0; bottom: 0; width: 2px; background-color: #ef4444; z-index: 20; pointer-events: none; left: 0%;">
                     <div style="position: absolute; top: -8px; left: 50%; transform: translateX(-50%); width: 0; height: 0; border-left: 6px solid transparent; border-right: 6px solid transparent; border-top: 6px solid #ef4444;"></div>
@@ -70,6 +70,17 @@
                     to { transform: rotate(360deg); }
                 }
             </style>
+            
+            <!-- Timeline Tracks - Video Thumbnails -->
+            <div id="thumbnails-track-container" class="w-full border-2 border-gray-200 dark:border-gray-700 rounded-lg overflow-hidden mb-4" style="min-height: 100px; background: #ffffff;">
+                <div class="px-3 py-2 bg-gray-50 dark:bg-gray-900 border-b border-gray-200 dark:border-gray-700 flex items-center justify-between">
+                    <span class="text-sm font-semibold text-gray-700 dark:text-gray-300">Video Thumbnails</span>
+                    <span class="text-xs text-gray-500 dark:text-gray-400" id="thumbnails-status">Generating thumbnails...</span>
+                </div>
+                <div id="thumbnails-track" class="relative w-full" style="min-height: 80px; background: #fafafa; overflow-x: auto; overflow-y: hidden;">
+                    <!-- Video thumbnails will be rendered here -->
+                </div>
+            </div>
             
             <!-- Timeline Tracks - Chapters Visualization -->
             <div id="timeline-tracks" class="w-full border-2 border-gray-200 dark:border-gray-700 rounded-lg overflow-hidden mb-4" style="min-height: 80px; background: #ffffff;">
@@ -311,23 +322,287 @@
                     
                     // Create simple waveform visualization
                     function createSimpleWaveform() {
-                        if (!waveformContainer || !videoDuration) return;
+                        if (!waveformContainer || !videoDuration) {
+                            console.warn('Cannot create waveform:', {waveformContainer, videoDuration});
+                            return;
+                        }
+                        
+                        // Clear existing waveform bars
+                        const existingBars = waveformContainer.querySelectorAll('.waveform-bar');
+                        existingBars.forEach(bar => bar.remove());
                         
                         // Create a simple bar-based waveform visualization
-                        const bars = 100; // Number of bars
-                        const barWidth = waveformContainer.offsetWidth / bars;
+                        const bars = 150; // Number of bars
+                        const containerWidth = waveformContainer.offsetWidth || 1000;
+                        const barWidth = Math.max(2, containerWidth / bars);
+                        
+                        console.log('Creating simple waveform with', bars, 'bars, width:', containerWidth);
                         
                         for (let i = 0; i < bars; i++) {
                             const bar = document.createElement('div');
+                            bar.className = 'waveform-bar';
                             bar.style.position = 'absolute';
                             bar.style.left = `${(i / bars) * 100}%`;
                             bar.style.width = `${barWidth}px`;
-                            bar.style.height = `${20 + Math.random() * 80}px`; // Random height for demo
+                            bar.style.height = `${30 + Math.random() * 70}px`; // Random height
                             bar.style.backgroundColor = '#6366f1'; // indigo-500
                             bar.style.bottom = '0';
                             bar.style.borderRadius = '2px';
+                            bar.style.pointerEvents = 'none'; // Allow clicks to pass through
                             waveformContainer.appendChild(bar);
                         }
+                        
+                        console.log('Simple waveform created');
+                    }
+
+                    // Extract video frame at specific time
+                    function extractFrameAtTime(video, time) {
+                        return new Promise((resolve, reject) => {
+                            const canvas = document.createElement('canvas');
+                            const ctx = canvas.getContext('2d');
+                            
+                            // Store original time
+                            const originalTime = video.currentTime;
+                            
+                            // Set video to desired time
+                            video.currentTime = time;
+                            
+                            // Wait for video to seek to that time
+                            const onSeeked = () => {
+                                try {
+                                    // Set canvas dimensions to match video
+                                    canvas.width = video.videoWidth || 320;
+                                    canvas.height = video.videoHeight || 180;
+                                    
+                                    // Draw video frame to canvas
+                                    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+                                    
+                                    // Convert to data URL
+                                    const imageData = canvas.toDataURL('image/jpeg', 0.7);
+                                    
+                                    // Restore original time
+                                    video.currentTime = originalTime;
+                                    
+                                    resolve(imageData);
+                                } catch (error) {
+                                    video.currentTime = originalTime;
+                                    reject(error);
+                                }
+                            };
+                            
+                            // Handle seek errors
+                            const onError = () => {
+                                video.removeEventListener('seeked', onSeeked);
+                                video.removeEventListener('error', onError);
+                                video.currentTime = originalTime;
+                                reject(new Error('Failed to seek video'));
+                            };
+                            
+                            video.addEventListener('seeked', onSeeked, { once: true });
+                            video.addEventListener('error', onError, { once: true });
+                            
+                            // Timeout fallback
+                            setTimeout(() => {
+                                video.removeEventListener('seeked', onSeeked);
+                                video.removeEventListener('error', onError);
+                                video.currentTime = originalTime;
+                                reject(new Error('Seek timeout'));
+                            }, 2000);
+                        });
+                    }
+
+                    // Generate video thumbnails for timeline
+                    let thumbnailGenerationInProgress = false;
+                    let thumbnailsCache = new Map();
+                    
+                    async function generateVideoThumbnails() {
+                        if (!video || !videoDuration || videoDuration <= 0) {
+                            console.warn('Cannot generate thumbnails: invalid video or duration');
+                            return;
+                        }
+                        
+                        const thumbnailsTrack = document.getElementById('thumbnails-track');
+                        const thumbnailsStatus = document.getElementById('thumbnails-status');
+                        
+                        if (!thumbnailsTrack) {
+                            console.error('Thumbnails track not found');
+                            return;
+                        }
+                        
+                        if (thumbnailGenerationInProgress) {
+                            console.log('Thumbnail generation already in progress');
+                            return;
+                        }
+                        
+                        thumbnailGenerationInProgress = true;
+                        
+                        if (thumbnailsStatus) {
+                            thumbnailsStatus.textContent = 'Generating thumbnails...';
+                        }
+                        
+                        // Clear existing thumbnails
+                        thumbnailsTrack.innerHTML = '';
+                        
+                        // Calculate number of thumbnails based on video duration and container width
+                        const containerWidth = thumbnailsTrack.offsetWidth || 1000;
+                        const thumbnailWidth = 120; // Fixed width per thumbnail
+                        const maxThumbnails = Math.floor(containerWidth / thumbnailWidth);
+                        const minThumbnails = Math.min(20, maxThumbnails); // At least 20 thumbnails
+                        const numThumbnails = Math.max(minThumbnails, Math.min(maxThumbnails, Math.floor(videoDuration / 2))); // One thumbnail per 2 seconds max
+                        
+                        const interval = videoDuration / numThumbnails;
+                        
+                        console.log('Generating', numThumbnails, 'thumbnails at', interval.toFixed(2), 'second intervals');
+                        
+                        // Create container for thumbnails with proper width
+                        const thumbnailsContainer = document.createElement('div');
+                        thumbnailsContainer.style.position = 'relative';
+                        thumbnailsContainer.style.width = `${numThumbnails * thumbnailWidth}px`;
+                        thumbnailsContainer.style.height = '80px';
+                        thumbnailsContainer.style.display = 'flex';
+                        thumbnailsContainer.style.flexDirection = 'row';
+                        thumbnailsTrack.appendChild(thumbnailsContainer);
+                        
+                        let generated = 0;
+                        let failed = 0;
+                        
+                        // Generate thumbnails sequentially to avoid overwhelming the browser
+                        async function generateNextThumbnail(index) {
+                            if (index >= numThumbnails) {
+                                thumbnailGenerationInProgress = false;
+                                if (thumbnailsStatus) {
+                                    thumbnailsStatus.textContent = `${generated} thumbnails generated`;
+                                }
+                                console.log('Thumbnail generation complete:', generated, 'generated,', failed, 'failed');
+                                return;
+                            }
+                            
+                            const time = index * interval;
+                            
+                            // Check cache first
+                            const cacheKey = Math.floor(time);
+                            if (thumbnailsCache.has(cacheKey)) {
+                                const cachedThumbnail = thumbnailsCache.get(cacheKey);
+                                createThumbnailElement(cachedThumbnail, time, index, thumbnailWidth);
+                                generated++;
+                                // Generate next immediately for cached thumbnails
+                                setTimeout(() => generateNextThumbnail(index + 1), 10);
+                                return;
+                            }
+                            
+                            try {
+                                const imageData = await extractFrameAtTime(video, time);
+                                
+                                // Cache the thumbnail
+                                thumbnailsCache.set(cacheKey, imageData);
+                                
+                                // Create thumbnail element
+                                createThumbnailElement(imageData, time, index, thumbnailWidth);
+                                
+                                generated++;
+                                
+                                if (thumbnailsStatus && index % 5 === 0) {
+                                    thumbnailsStatus.textContent = `Generating... ${generated}/${numThumbnails}`;
+                                }
+                                
+                                // Small delay to prevent browser freezing
+                                setTimeout(() => generateNextThumbnail(index + 1), 50);
+                            } catch (error) {
+                                console.warn('Failed to extract frame at', time, 'seconds:', error);
+                                failed++;
+                                
+                                // Create placeholder for failed thumbnail
+                                createThumbnailPlaceholder(time, index, thumbnailWidth);
+                                
+                                // Continue with next thumbnail
+                                setTimeout(() => generateNextThumbnail(index + 1), 50);
+                            }
+                        }
+                        
+                        // Start generating thumbnails
+                        generateNextThumbnail(0);
+                    }
+                    
+                    function createThumbnailElement(imageData, time, index, width) {
+                        const thumbnailsContainer = document.querySelector('#thumbnails-track > div');
+                        if (!thumbnailsContainer) return;
+                        
+                        const thumbnailDiv = document.createElement('div');
+                        thumbnailDiv.style.position = 'relative';
+                        thumbnailDiv.style.width = `${width}px`;
+                        thumbnailDiv.style.height = '80px';
+                        thumbnailDiv.style.flexShrink = '0';
+                        thumbnailDiv.style.borderRight = '1px solid #e5e7eb';
+                        thumbnailDiv.style.cursor = 'pointer';
+                        thumbnailDiv.style.overflow = 'hidden';
+                        thumbnailDiv.dataset.time = time;
+                        
+                        const img = document.createElement('img');
+                        img.src = imageData;
+                        img.style.width = '100%';
+                        img.style.height = '100%';
+                        img.style.objectFit = 'cover';
+                        img.style.display = 'block';
+                        thumbnailDiv.appendChild(img);
+                        
+                        // Time label overlay
+                        const timeLabel = document.createElement('div');
+                        timeLabel.style.position = 'absolute';
+                        timeLabel.style.bottom = '0';
+                        timeLabel.style.left = '0';
+                        timeLabel.style.right = '0';
+                        timeLabel.style.background = 'linear-gradient(to top, rgba(0,0,0,0.7), transparent)';
+                        timeLabel.style.color = '#ffffff';
+                        timeLabel.style.fontSize = '10px';
+                        timeLabel.style.padding = '2px 4px';
+                        timeLabel.style.textAlign = 'center';
+                        timeLabel.textContent = formatTime(time);
+                        thumbnailDiv.appendChild(timeLabel);
+                        
+                        // Click handler to seek video
+                        thumbnailDiv.addEventListener('click', () => {
+                            video.currentTime = time;
+                            if (wavesurfer && wavesurfer.getDuration() > 0) {
+                                wavesurfer.seekTo(time / wavesurfer.getDuration());
+                            }
+                            updatePlayhead(time / videoDuration);
+                        });
+                        
+                        // Hover effect
+                        thumbnailDiv.addEventListener('mouseenter', () => {
+                            thumbnailDiv.style.transform = 'scale(1.05)';
+                            thumbnailDiv.style.zIndex = '20';
+                            thumbnailDiv.style.transition = 'transform 0.2s';
+                        });
+                        
+                        thumbnailDiv.addEventListener('mouseleave', () => {
+                            thumbnailDiv.style.transform = 'scale(1)';
+                            thumbnailDiv.style.zIndex = '1';
+                        });
+                        
+                        thumbnailsContainer.appendChild(thumbnailDiv);
+                    }
+                    
+                    function createThumbnailPlaceholder(time, index, width) {
+                        const thumbnailsContainer = document.querySelector('#thumbnails-track > div');
+                        if (!thumbnailsContainer) return;
+                        
+                        const placeholderDiv = document.createElement('div');
+                        placeholderDiv.style.position = 'relative';
+                        placeholderDiv.style.width = `${width}px`;
+                        placeholderDiv.style.height = '80px';
+                        placeholderDiv.style.flexShrink = '0';
+                        placeholderDiv.style.borderRight = '1px solid #e5e7eb';
+                        placeholderDiv.style.background = '#e5e7eb';
+                        placeholderDiv.style.display = 'flex';
+                        placeholderDiv.style.alignItems = 'center';
+                        placeholderDiv.style.justifyContent = 'center';
+                        placeholderDiv.style.color = '#9ca3af';
+                        placeholderDiv.style.fontSize = '10px';
+                        placeholderDiv.textContent = formatTime(time);
+                        placeholderDiv.dataset.time = time;
+                        
+                        thumbnailsContainer.appendChild(placeholderDiv);
                     }
 
                     function getOptimalInterval(duration, width) {
@@ -520,7 +795,10 @@
                             console.log('WaveSurfer instance created with MediaElement backend');
                             
                             // Create a simple visual waveform representation since MediaElement doesn't generate one
-                            createSimpleWaveform();
+                            // Do this immediately, don't wait for WaveSurfer ready event
+                            setTimeout(() => {
+                                createSimpleWaveform();
+                            }, 200);
 
                             wavesurfer.on('ready', () => {
                                 console.log('Waveform ready, duration:', wavesurfer.getDuration());
@@ -607,9 +885,12 @@
                                 if (errorEl) errorEl.style.display = 'none';
                                 
                                 // Create simple waveform visualization as fallback
-                                if (videoDuration > 0) {
-                                    createSimpleWaveform();
-                                }
+                                setTimeout(() => {
+                                    if (videoDuration > 0) {
+                                        createSimpleWaveform();
+                                        setupWaveformSelection(); // Setup selection after waveform is created
+                                    }
+                                }, 100);
                                 
                                 // Timeline should already be showing from video metadata
                                 // Just ensure it's there
@@ -623,7 +904,15 @@
                         } catch (error) {
                             console.error('Failed to initialize WaveSurfer:', error);
                             if (loadingEl) loadingEl.style.display = 'none';
-                            if (errorEl) errorEl.classList.remove('hidden');
+                            if (errorEl) errorEl.style.display = 'none';
+                            
+                            // Create simple waveform as fallback
+                            setTimeout(() => {
+                                if (videoDuration > 0) {
+                                    createSimpleWaveform();
+                                    setupWaveformSelection();
+                                }
+                            }, 200);
                             
                             // Still show timeline even if waveform fails
                             if (video.duration) {
@@ -633,54 +922,131 @@
                         }
                     }
 
-                    // Setup waveform selection
+                    // Setup waveform selection (works with or without WaveSurfer)
+                    let selectionSetupDone = false;
                     function setupWaveformSelection() {
-                        if (!waveformContainer || !regions || !wavesurfer) return;
+                        if (!waveformContainer || !videoDuration) {
+                            console.warn('Cannot setup waveform selection:', {waveformContainer, videoDuration});
+                            return;
+                        }
                         
-                        waveformContainer.addEventListener('mousedown', (e) => {
-                            const clickedRegion = regions.getRegions().find(r => {
-                                const regionEl = document.querySelector(`[data-id="${r.id}"]`);
-                                return regionEl && regionEl.contains(e.target);
-                            });
-                            
-                            if (!clickedRegion && (e.target === waveformContainer || e.target.closest('#waveform'))) {
-                                isSelecting = true;
-                                const rect = waveformContainer.getBoundingClientRect();
-                                const x = e.clientX - rect.left;
-                                const progress = x / rect.width;
-                                selectionStart = progress * wavesurfer.getDuration();
-                                updateSelectionInfo(selectionStart, null);
+                        if (selectionSetupDone) {
+                            console.log('Selection already setup, skipping');
+                            return;
+                        }
+                        
+                        console.log('Setting up waveform selection');
+                        selectionSetupDone = true;
+                        
+                        const updatedContainer = document.getElementById('waveform');
+                        if (!updatedContainer) {
+                            console.error('Waveform container not found');
+                            return;
+                        }
+                        
+                        updatedContainer.addEventListener('mousedown', (e) => {
+                            // Don't start selection if clicking on playhead or selection block
+                            if (e.target.closest('#playhead-line') || 
+                                e.target.closest('#waveform-playhead') ||
+                                e.target.id === 'temp-selection-visual') {
+                                return;
                             }
+                            
+                            // Start selection when clicking anywhere on waveform
+                            isSelecting = true;
+                            const rect = updatedContainer.getBoundingClientRect();
+                            const x = e.clientX - rect.left;
+                            const progress = Math.max(0, Math.min(1, x / rect.width));
+                            selectionStart = progress * videoDuration;
+                            updateSelectionInfo(selectionStart, null);
+                            console.log('Selection started at:', selectionStart.toFixed(2), 'seconds');
+                            e.preventDefault();
+                            e.stopPropagation();
                         });
 
-                        waveformContainer.addEventListener('mousemove', (e) => {
-                            if (isSelecting && selectionStart !== null && regions && wavesurfer) {
-                                const rect = waveformContainer.getBoundingClientRect();
+                        updatedContainer.addEventListener('mousemove', (e) => {
+                            if (isSelecting && selectionStart !== null && videoDuration > 0) {
+                                const rect = updatedContainer.getBoundingClientRect();
                                 const x = e.clientX - rect.left;
                                 const progress = Math.max(0, Math.min(1, x / rect.width));
-                                const selectionEnd = progress * wavesurfer.getDuration();
+                                const selectionEnd = progress * videoDuration;
                                 
-                                const tempRegion = regions.getRegions().find(r => r.id === 'temp-selection');
-                                if (tempRegion) tempRegion.remove();
+                                // Remove existing temp selection visual
+                                const existingSelection = document.getElementById('temp-selection-visual');
+                                if (existingSelection) existingSelection.remove();
+                                
+                                // Remove temp region if WaveSurfer regions exist
+                                if (regions) {
+                                    const tempRegion = regions.getRegions().find(r => r.id === 'temp-selection');
+                                    if (tempRegion) tempRegion.remove();
+                                }
                                 
                                 if (selectionEnd > selectionStart) {
-                                    regions.addRegion({
-                                        start: selectionStart,
-                                        end: selectionEnd,
-                                        color: 'rgba(59, 130, 246, 0.4)',
-                                        drag: false,
-                                        resize: true,
-                                        id: 'temp-selection',
-                                    });
-                                    currentRegion = regions.getRegions().find(r => r.id === 'temp-selection');
+                                    // Create visual selection block
+                                    const selectionBlock = document.createElement('div');
+                                    selectionBlock.id = 'temp-selection-visual';
+                                    selectionBlock.style.position = 'absolute';
+                                    selectionBlock.style.left = `${(selectionStart / videoDuration) * 100}%`;
+                                    selectionBlock.style.width = `${((selectionEnd - selectionStart) / videoDuration) * 100}%`;
+                                    selectionBlock.style.top = '0';
+                                    selectionBlock.style.bottom = '0';
+                                    selectionBlock.style.backgroundColor = 'rgba(59, 130, 246, 0.4)';
+                                    selectionBlock.style.border = '2px solid #3b82f6';
+                                    selectionBlock.style.borderRadius = '4px';
+                                    selectionBlock.style.zIndex = '15';
+                                    selectionBlock.style.pointerEvents = 'none';
+                                    selectionBlock.dataset.start = selectionStart;
+                                    selectionBlock.dataset.end = selectionEnd;
+                                    updatedContainer.appendChild(selectionBlock);
+                                    
+                                    // Add region if WaveSurfer is working
+                                    if (regions && wavesurfer) {
+                                        try {
+                                            regions.addRegion({
+                                                start: selectionStart,
+                                                end: selectionEnd,
+                                                color: 'rgba(59, 130, 246, 0.4)',
+                                                drag: false,
+                                                resize: true,
+                                                id: 'temp-selection',
+                                            });
+                                            currentRegion = regions.getRegions().find(r => r.id === 'temp-selection');
+                                        } catch (error) {
+                                            console.warn('Could not add WaveSurfer region:', error);
+                                        }
+                                    }
+                                    
+                                    // Store selection for chapter creation
+                                    if (!currentRegion) {
+                                        currentRegion = {
+                                            id: 'temp-selection',
+                                            start: selectionStart,
+                                            end: selectionEnd
+                                        };
+                                    }
+                                    
                                     updateSelectionInfo(selectionStart, selectionEnd);
                                 }
                             }
                         });
 
-                        waveformContainer.addEventListener('mouseup', () => {
-                            isSelecting = false;
+                        updatedContainer.addEventListener('mouseup', (e) => {
+                            if (isSelecting) {
+                                console.log('Selection ended');
+                                isSelecting = false;
+                                e.preventDefault();
+                                e.stopPropagation();
+                            }
                         });
+                        
+                        // Also handle mouseleave to end selection
+                        updatedContainer.addEventListener('mouseleave', () => {
+                            if (isSelecting) {
+                                isSelecting = false;
+                            }
+                        });
+                        
+                        console.log('Waveform selection setup complete');
                     }
 
                     // Video event handlers
@@ -715,7 +1081,11 @@
                     });
 
                     // Initialize timeline immediately when video metadata loads
+                    let loadedmetadataHandled = false;
                     video.addEventListener('loadedmetadata', () => {
+                        if (loadedmetadataHandled) return;
+                        loadedmetadataHandled = true;
+                        
                         console.log('Video metadata loaded, duration:', video.duration);
                         console.log('Video readyState:', video.readyState);
                         
@@ -729,12 +1099,18 @@
                                 renderChaptersOnTimeline();
                                 setupPlayheadDragging();
                                 updateTimeDisplay();
+                                setupWaveformSelection(); // Setup selection here too
                             }, 100);
                             
                             // Initialize WaveSurfer after a delay (but don't wait for it)
                             setTimeout(() => {
                                 initializeWaveSurfer();
                             }, 500);
+                            
+                            // Generate thumbnails after video metadata is loaded
+                            setTimeout(() => {
+                                generateVideoThumbnails();
+                            }, 1000);
                         } else {
                             console.warn('Video duration is 0 or invalid');
                         }
@@ -749,6 +1125,11 @@
                             renderChaptersOnTimeline();
                             setupPlayheadDragging();
                             updateTimeDisplay();
+                            setupWaveformSelection();
+                            // Generate thumbnails after a short delay to ensure everything is rendered
+                            setTimeout(() => {
+                                generateVideoThumbnails();
+                            }, 500);
                         }, 100);
                     }
                     
@@ -760,6 +1141,13 @@
                             createTimelineRuler(video.duration);
                             renderChaptersOnTimeline();
                             updateTimeDisplay();
+                            
+                            // Generate thumbnails if not already generated
+                            setTimeout(() => {
+                                if (!thumbnailGenerationInProgress && thumbnailsCache.size === 0) {
+                                    generateVideoThumbnails();
+                                }
+                            }, 500);
                         }
                         
                         if (!wavesurfer && video.duration) {
@@ -771,14 +1159,23 @@
                         }
                     });
                     
-                    // Also try on loadeddata event
+                    // Also try on loadeddata event (but only once)
+                    let loadeddataHandled = false;
                     video.addEventListener('loadeddata', () => {
+                        if (loadeddataHandled) return;
+                        loadeddataHandled = true;
+                        
                         console.log('Video data loaded, duration:', video.duration);
                         if (video.duration && video.duration > 0 && !videoDuration) {
                             videoDuration = video.duration;
                             createTimelineRuler(video.duration);
                             renderChaptersOnTimeline();
                             updateTimeDisplay();
+                            setupWaveformSelection();
+                            // Generate thumbnails after video is fully loaded
+                            setTimeout(() => {
+                                generateVideoThumbnails();
+                            }, 500);
                         }
                     });
 
@@ -809,21 +1206,72 @@
                     const addChapterBtn = document.getElementById('add-chapter-btn');
                     if (addChapterBtn) {
                         addChapterBtn.addEventListener('click', () => {
-                            if (!regions) {
-                                alert('Waveform is not ready yet. Please wait.');
-                                return;
+                            // Check for visual selection first (works without WaveSurfer)
+                            const visualSelection = document.getElementById('temp-selection-visual');
+                            
+                            // Try to get region from WaveSurfer if available
+                            let tempRegion = null;
+                            if (regions) {
+                                tempRegion = regions.getRegions().find(r => r.id === 'temp-selection');
                             }
                             
-                            const tempRegion = regions.getRegions().find(r => r.id === 'temp-selection');
+                            // Use currentRegion if it exists (from visual selection)
                             const selectedRegion = tempRegion || currentRegion;
                             
-                            if (selectedRegion && selectedRegion.id === 'temp-selection') {
-                                @this.call('addChapter', selectedRegion.start, selectedRegion.end).then(() => {
-                                    selectedRegion.remove();
-                                    renderChaptersOnTimeline();
-                                    updateSelectionInfo(null, null);
-                                    setTimeout(() => window.location.reload(), 500);
-                                });
+                            if (selectedRegion && (selectedRegion.id === 'temp-selection' || visualSelection)) {
+                                const startTime = selectedRegion.start || parseFloat(visualSelection?.dataset?.start || 0);
+                                const endTime = selectedRegion.end || parseFloat(visualSelection?.dataset?.end || 0);
+                                
+                                if (startTime >= 0 && endTime > startTime) {
+                                    console.log('Creating chapter from selection:', startTime, 'to', endTime);
+                                    
+                                    @this.call('addChapter', startTime, endTime).then(() => {
+                                        // Remove visual selection
+                                        if (visualSelection) visualSelection.remove();
+                                        
+                                        // Remove WaveSurfer region if exists
+                                        if (tempRegion) {
+                                            try {
+                                                tempRegion.remove();
+                                            } catch (e) {
+                                                console.warn('Could not remove WaveSurfer region:', e);
+                                            }
+                                        }
+                                        
+                                        currentRegion = null;
+                                        updateSelectionInfo(null, null);
+                                        
+                                        // Refresh chapters on timeline
+                                        setTimeout(() => {
+                                            renderChaptersOnTimeline();
+                                            
+                                            // Re-add regions if WaveSurfer is working
+                                            if (regions && wavesurfer) {
+                                                @if($record && $record->chapters)
+                                                    const chapters = @json($record->chapters);
+                                                    // Clear existing regions first
+                                                    regions.clearRegions();
+                                                    chapters.forEach((chapter) => {
+                                                        try {
+                                                            regions.addRegion({
+                                                                start: parseFloat(chapter.start_time),
+                                                                end: parseFloat(chapter.end_time),
+                                                                color: 'rgba(34, 197, 94, 0.5)',
+                                                                drag: true,
+                                                                resize: true,
+                                                                id: 'chapter-' + chapter.id,
+                                                            });
+                                                        } catch (error) {
+                                                            console.warn('Error re-adding region:', error);
+                                                        }
+                                                    });
+                                                @endif
+                                            }
+                                        }, 500);
+                                    });
+                                } else {
+                                    alert('Invalid selection. Please select a valid time range.');
+                                }
                             } else if (selectedRegion) {
                                 alert('Please select a new region on the waveform by clicking and dragging.');
                             } else {

@@ -104,7 +104,15 @@ class EditVideoChapters extends Page implements HasForms, HasTable
                             ->title('Chapter updated successfully')
                             ->success()
                             ->send();
-                        $this->mount($this->record->id);
+                        $this->record->refresh();
+                        $this->record->load('chapters');
+                        $this->chapters = $this->record->chapters->map(fn ($chapter) => [
+                            'id' => $chapter->id,
+                            'title' => $chapter->title,
+                            'start_time' => $chapter->start_time,
+                            'end_time' => $chapter->end_time,
+                            'order' => $chapter->order,
+                        ])->toArray();
                     }),
                 Actions\Action::make('delete')
                     ->icon('heroicon-o-trash')
@@ -116,7 +124,15 @@ class EditVideoChapters extends Page implements HasForms, HasTable
                             ->title('Chapter deleted successfully')
                             ->success()
                             ->send();
-                        $this->mount($this->record->id);
+                        $this->record->refresh();
+                        $this->record->load('chapters');
+                        $this->chapters = $this->record->chapters->map(fn ($chapter) => [
+                            'id' => $chapter->id,
+                            'title' => $chapter->title,
+                            'start_time' => $chapter->start_time,
+                            'end_time' => $chapter->end_time,
+                            'order' => $chapter->order,
+                        ])->toArray();
                     }),
             ])
             ->defaultSort('order');
@@ -137,7 +153,16 @@ class EditVideoChapters extends Page implements HasForms, HasTable
             ->success()
             ->send();
 
-        $this->mount($this->record->id);
+        // Refresh the record and chapters
+        $this->record->refresh();
+        $this->record->load('chapters');
+        $this->chapters = $this->record->chapters->map(fn ($chapter) => [
+            'id' => $chapter->id,
+            'title' => $chapter->title,
+            'start_time' => $chapter->start_time,
+            'end_time' => $chapter->end_time,
+            'order' => $chapter->order,
+        ])->toArray();
     }
 
     public function updateChapterTitle(int $chapterId, string $title): void
@@ -150,7 +175,15 @@ class EditVideoChapters extends Page implements HasForms, HasTable
             ->success()
             ->send();
 
-        $this->mount($this->record->id);
+        $this->record->refresh();
+        $this->record->load('chapters');
+        $this->chapters = $this->record->chapters->map(fn ($chapter) => [
+            'id' => $chapter->id,
+            'title' => $chapter->title,
+            'start_time' => $chapter->start_time,
+            'end_time' => $chapter->end_time,
+            'order' => $chapter->order,
+        ])->toArray();
     }
 
     public function getVideoUrl(): string
