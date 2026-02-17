@@ -50,7 +50,7 @@
             
             <!-- Waveform Container -->
             <div id="waveform-wrapper" style="position: relative; margin-bottom: 8px;">
-                <div id="waveform" style="width: 100%; min-height: 120px; background: #f3f4f6; position: relative; display: block;"></div>
+                <div id="waveform" style="width: 100%; min-height: 20px; background: #f3f4f6; position: relative; display: block;"></div>
                 <div id="waveform-playhead" style="position: absolute; top: 0; bottom: 0; width: 2px; background-color: #ef4444; z-index: 10; pointer-events: none; left: 0%;"></div>
                 <div id="waveform-loading" style="position: absolute; top: 0; left: 0; right: 0; bottom: 0; display: flex; align-items: center; justify-content: center; background-color: #f9fafb; z-index: 30;">
                     <div style="text-align: center;">
@@ -320,8 +320,146 @@
                         });
                     }
                     
-                    // Create simple waveform visualization
-                    function createSimpleWaveform() {
+                    // Extract audio waveform data from video using Web Audio API
+                    let audioContext = null;
+                    let analyser = null;
+                    let waveformData = null;
+                    let isExtractingAudio = false;
+                    
+                    async function extractAudioWaveform() {
+                        if (!video || !videoDuration || videoDuration <= 0) {
+                            console.warn('Cannot extract audio: invalid video or duration');
+                            return null;
+                        }
+                        
+                        if (isExtractingAudio) {
+                            console.log('Audio extraction already in progress');
+                            return null;
+                        }
+                        
+                        isExtractingAudio = true;
+                        
+                        try {
+                            // Create audio context if not exists
+                            if (!audioContext) {
+                                audioContext = new (window.AudioContext || window.webkitAudioContext)();
+                            }
+                            
+                            // Resume audio context if suspended (required by some browsers)
+                            if (audioContext.state === 'suspended') {
+                                await audioContext.resume();
+                            }
+                            
+                            // Create audio source from video element
+                            const source = audioContext.createMediaElementSource(video);
+                            
+                            if (!analyser) {
+                                analyser = audioContext.createAnalyser();
+                                analyser.fftSize = 2048;
+                                analyser.smoothingTimeConstant = 0.1;
+                                
+                                source.connect(analyser);
+                            }
+                            
+                            // Get audio buffer data
+                            const bufferLength = analyser.frequencyBinCount;
+                            const dataArray = new Uint8Array(bufferLength);
+                            
+                            // Sample audio at specific intervals by seeking
+                            const numSamples = 250; // Number of waveform points
+                            const samples = [];
+                            
+                            const originalTime = video.currentTime;
+                            const wasPaused = video.paused;
+                            const wasMuted = video.muted;
+                            
+                            // Mute video temporarily
+                            video.muted = true;
+                            if (!wasPaused) {
+                                video.pause();
+                            }
+                            
+                            console.log('Extracting audio waveform data from', numSamples, 'samples...');
+                            
+                            // Sample at regular intervals
+                            for (let i = 0; i < numSamples; i++) {
+                                const sampleTime = (i / numSamples) * videoDuration;
+                                
+                                // Seek to sample time
+                                video.currentTime = sampleTime;
+                                
+                                // Wait for seek to complete
+                                await new Promise((resolve) => {
+                                    const onSeeked = () => {
+                                        video.removeEventListener('seeked', onSeeked);
+                                        resolve();
+                                    };
+                                    video.addEventListener('seeked', onSeeked, { once: true });
+                                    
+                                    // Timeout fallback
+                                    setTimeout(() => {
+                                        video.removeEventListener('seeked', onSeeked);
+                                        resolve();
+                                    }, 150);
+                                });
+                                
+                                // Small delay to let audio buffer update
+                                await new Promise(resolve => setTimeout(resolve, 50));
+                                
+                                // Get time domain data (waveform data)
+                                analyser.getByteTimeDomainData(dataArray);
+                                
+                                // Calculate RMS (Root Mean Square) for amplitude
+                                let sumSquares = 0;
+                                for (let j = 0; j < bufferLength; j++) {
+                                    const normalized = (dataArray[j] - 128) / 128;
+                                    sumSquares += normalized * normalized;
+                                }
+                                const rms = Math.sqrt(sumSquares / bufferLength);
+                                
+                                samples.push(rms);
+                                
+                                // Update progress every 25 samples
+                                if (i % 25 === 0 && loadingEl) {
+                                    const percent = Math.round((i / numSamples) * 100);
+                                    loadingEl.querySelector('p').textContent = `Analyzing audio waveform... ${percent}%`;
+                                }
+                            }
+                            
+                            // Restore original video state
+                            video.currentTime = originalTime;
+                            video.muted = wasMuted;
+                            if (!wasPaused) {
+                                video.play();
+                            }
+                            
+                            waveformData = samples;
+                            isExtractingAudio = false;
+                            console.log('Audio waveform data extracted:', samples.length, 'samples');
+                            
+                            return samples;
+                        } catch (error) {
+                            console.error('Error extracting audio waveform:', error);
+                            isExtractingAudio = false;
+                            
+                            // Restore video state
+                            try {
+                                if (video) {
+                                    video.muted = false;
+                                    if (typeof originalTime !== 'undefined') {
+                                        video.currentTime = originalTime;
+                                    }
+                                }
+                            } catch (restoreError) {
+                                console.warn('Error restoring video state:', restoreError);
+                            }
+                            
+                            return null;
+                        }
+                    }
+                    
+                    // Create waveform visualization from audio data
+                    async function createWaveformFromAudio() {
                         if (!waveformContainer || !videoDuration) {
                             console.warn('Cannot create waveform:', {waveformContainer, videoDuration});
                             return;
@@ -331,28 +469,93 @@
                         const existingBars = waveformContainer.querySelectorAll('.waveform-bar');
                         existingBars.forEach(bar => bar.remove());
                         
-                        // Create a simple bar-based waveform visualization
-                        const bars = 150; // Number of bars
+                        // Show loading state
+                        if (loadingEl) {
+                            loadingEl.style.display = 'flex';
+                            loadingEl.querySelector('p').textContent = 'Analyzing audio waveform...';
+                        }
+                        
+                        console.log('Creating waveform from audio data...');
+                        
+                        // Extract audio data
+                        const audioData = await extractAudioWaveform();
+                        
+                        // Hide loading
+                        if (loadingEl) {
+                            loadingEl.style.display = 'none';
+                        }
+                        
+                        if (!audioData || audioData.length === 0) {
+                            console.warn('No audio data available, creating fallback visualization');
+                            createFallbackWaveform();
+                            return;
+                        }
+                        
                         const containerWidth = waveformContainer.offsetWidth || 1000;
-                        const barWidth = Math.max(2, containerWidth / bars);
+                        const containerHeight = waveformContainer.offsetHeight || 20;
+                        const numBars = audioData.length;
+                        const barWidth = 1;
+                        const centerY = containerHeight / 2;
                         
-                        console.log('Creating simple waveform with', bars, 'bars, width:', containerWidth);
+                        console.log('Rendering waveform with', numBars, 'bars, width:', containerWidth);
                         
-                        for (let i = 0; i < bars; i++) {
+                        // Find max amplitude for normalization
+                        const maxAmplitude = Math.max(...audioData);
+                        
+                        // Create waveform bars from audio data
+                        for (let i = 0; i < numBars; i++) {
+                            // Normalize amplitude
+                            const normalizedAmplitude = maxAmplitude > 0 ? audioData[i] / maxAmplitude : audioData[i];
+                            const barHeight = Math.max(2, normalizedAmplitude * containerHeight * 0.9); // Scale to 90% of container height
+                            
                             const bar = document.createElement('div');
                             bar.className = 'waveform-bar';
                             bar.style.position = 'absolute';
-                            bar.style.left = `${(i / bars) * 100}%`;
+                            bar.style.left = `${(i / numBars) * 100}%`;
                             bar.style.width = `${barWidth}px`;
-                            bar.style.height = `${30 + Math.random() * 70}px`; // Random height
+                            bar.style.height = `${barHeight}px`;
+                            bar.style.top = `${centerY - barHeight / 2}px`;
                             bar.style.backgroundColor = '#6366f1'; // indigo-500
-                            bar.style.bottom = '0';
-                            bar.style.borderRadius = '2px';
                             bar.style.pointerEvents = 'none'; // Allow clicks to pass through
+                            
                             waveformContainer.appendChild(bar);
                         }
                         
-                        console.log('Simple waveform created');
+                        console.log('Waveform created from audio data');
+                    }
+                    
+                    // Fallback waveform if audio extraction fails
+                    function createFallbackWaveform() {
+                        if (!waveformContainer || !videoDuration) {
+                            return;
+                        }
+                        
+                        const bars = 200;
+                        const containerWidth = waveformContainer.offsetWidth || 1000;
+                        const containerHeight = waveformContainer.offsetHeight || 20;
+                        const barWidth = 2;
+                        const centerY = containerHeight / 2;
+                        
+                        // Create a more realistic-looking waveform pattern
+                        for (let i = 0; i < bars; i++) {
+                            // Use sine wave pattern with some variation
+                            const position = i / bars;
+                            const baseHeight = Math.sin(position * Math.PI * 4) * 0.3 + 0.5;
+                            const variation = Math.random() * 0.2;
+                            const barHeight = Math.max(2, (baseHeight + variation) * containerHeight * 0.6);
+                            
+                            const bar = document.createElement('div');
+                            bar.className = 'waveform-bar';
+                            bar.style.position = 'absolute';
+                            bar.style.left = `${position * 100}%`;
+                            bar.style.width = `${barWidth}px`;
+                            bar.style.height = `${barHeight}px`;
+                            bar.style.top = `${centerY - barHeight / 2}px`;
+                            bar.style.backgroundColor = '#6366f1';
+                            bar.style.pointerEvents = 'none';
+                            
+                            waveformContainer.appendChild(bar);
+                        }
                     }
 
                     // Extract video frame at specific time
@@ -776,29 +979,34 @@
                             // Use MediaElement backend for video files - it doesn't generate waveform but syncs playback
                             // For actual waveform visualization, we'll create a simple visual representation
                             wavesurfer = WaveSurfer.create({
-                                container: waveformContainer,
-                                waveColor: '#6366f1',
-                                progressColor: '#8b5cf6',
-                                cursorColor: '#ef4444',
-                                barWidth: 3,
-                                barRadius: 2,
-                                responsive: true,
-                                height: 120,
-                                normalize: true,
-                                backend: 'MediaElement',
-                                mediaControls: false,
-                                media: video,
-                                // Don't try to generate waveform from video
-                                interact: true,
+
+                                container: '#waveform',
+  waveColor: '#4F4A85',
+  progressColor: '#383351',
+
+                                // container: waveformContainer,
+                                // waveColor: '#6366f1',
+                                // progressColor: '#8b5cf6',
+                                // cursorColor: '#ef4444',
+                                // barWidth: 2,
+                                // barRadius: 1,
+                                // responsive: true,
+                                // height: 60,
+                                // normalize: true,
+                                // backend: 'MediaElement',
+                                // mediaControls: false,
+                                // media: video,
+                                // // Don't try to generate waveform from video
+                                // interact: true,
                             });
 
                             console.log('WaveSurfer instance created with MediaElement backend');
                             
-                            // Create a simple visual waveform representation since MediaElement doesn't generate one
-                            // Do this immediately, don't wait for WaveSurfer ready event
+                            // Create waveform from actual audio data
+                            // Do this after a delay to ensure video is ready
                             setTimeout(() => {
-                                createSimpleWaveform();
-                            }, 200);
+                                createWaveformFromAudio();
+                            }, 500);
 
                             wavesurfer.on('ready', () => {
                                 console.log('Waveform ready, duration:', wavesurfer.getDuration());
@@ -884,10 +1092,10 @@
                                 // Hide error message - we'll use simple waveform instead
                                 if (errorEl) errorEl.style.display = 'none';
                                 
-                                // Create simple waveform visualization as fallback
+                                // Create waveform visualization as fallback
                                 setTimeout(() => {
                                     if (videoDuration > 0) {
-                                        createSimpleWaveform();
+                                        createWaveformFromAudio();
                                         setupWaveformSelection(); // Setup selection after waveform is created
                                     }
                                 }, 100);
@@ -906,10 +1114,10 @@
                             if (loadingEl) loadingEl.style.display = 'none';
                             if (errorEl) errorEl.style.display = 'none';
                             
-                            // Create simple waveform as fallback
+                            // Create waveform as fallback
                             setTimeout(() => {
                                 if (videoDuration > 0) {
-                                    createSimpleWaveform();
+                                    createWaveformFromAudio();
                                     setupWaveformSelection();
                                 }
                             }, 200);
