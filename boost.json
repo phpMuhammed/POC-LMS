@@ -2,11 +2,11 @@
     "agents": [
         "cursor"
     ],
-    "guidelines": true,
-    "herd_mcp": true,
-    "mcp": true,
-    "sail": false,
+    "packages": [
+        "filament/filament"
+    ],
     "skills": [
-        "pest-testing"
+        "pest-testing",
+        "fluxui-development"
     ]
 }
